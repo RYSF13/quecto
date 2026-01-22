@@ -13,9 +13,7 @@ While other editors claim to be lightweight, Quecto takes it to the absolute lim
 
 ## Features
 
-*   **Tiny Footprint**: Binary size is approximately **15KB - 20KB** (linked against libc).
 *   **Distraction-Free**: No line numbers, no colors, no status bar clutter. Just your code.
-*   **Modern Basics**: Full **UTF-8** support (including CJK characters).
 *   **Power Tools**: Built-in **Regex** (Regular Expression) support for find and replace.
 *   **Zero Config**: No dotfiles, no plugins, no startup latency.
 

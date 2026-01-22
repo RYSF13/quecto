@@ -12,11 +12,7 @@ SRC = quecto.c
 INSTALL_PATH = /usr/local/bin
 
 # Hardcore Compiler Flags
-# -Os: Optimize for size
-# -no-pie: Essential for the fixed address in min.ld
-# -fno-*: Remove standard bloat (stack protection, unwind tables, etc.)
-CFLAGS = -Os -fno-ident -fno-asynchronous-unwind-tables \
-         -fno-stack-protector -fomit-frame-pointer -no-pie -fno-plt -s
+CFLAGS = -Os -s -w -static-libgcc -no-pie -fno-asynchronous-unwind-tables -fno-unwind-tables -fno-ident -fno-stack-protector -fomit-frame-pointer -fmerge-all-constants -ffunction-sections -fdata-sections -Wl,--gc-sections -Wl,--build-id=none -Wl,-z,norelro -Wl,-N 
 
 
 # Strip Flags
