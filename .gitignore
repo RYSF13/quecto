@@ -1,0 +1,33 @@
+# Build artifacts
+quecto.o
+quecto
+*.o
+*.out
+
+# Editor backup files
+*~
+*.swp
+*.swo
+*.bak
+.*.swp
+
+# macOS
+.DS_Store
+._*
+
+# IDE/Editor configs
+.vscode/
+.idea/
+*.sublime-*
+
+# Debug files
+*.dSYM/
+core
+core.*
+
+# Temporary files
+*.tmp
+*.temp
+*.txt
+test
+test.*

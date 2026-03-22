@@ -1,0 +1,173 @@
+.TH QUECTO 1 "March 2026" "quecto 1.0" "User Commands"
+.SH NAME
+quecto \- a small terminal text editor
+.SH SYNOPSIS
+.B quecto
+.RB [ \-v ]
+.RB [ \-h ]
+.RI [ file ]
+.SH DESCRIPTION
+.B quecto
+is a small text editor for the terminal. It opens
+.I file
+for editing, or starts an empty buffer if the name is omitted or the file
+does not exist yet. The whole editor is a few hundred lines of C with no
+dependencies beyond the standard library, which makes it easy to read, easy
+to audit, and small enough to fit on a rescue image.
+.PP
+Text is edited in place on the screen: there are no modes, no menus and no
+prompts except when a file needs a name. The cursor follows the text, the
+display soft-wraps long lines, and the status bar at the bottom of the
+screen shows either the file name and cursor position or a short message.
+.PP
+Text is handled as UTF-8 throughout. Characters outside the ASCII range
+occupy the number of columns they are drawn in: a Chinese or Japanese
+character takes two columns, a combining accent takes none.
+.SH OPTIONS
+.TP
+.B \-v, \-\-version
+Print the version number and exit.
+.TP
+.B \-h, \-\-help
+Print a short usage summary and exit.
+.SH KEYS
+.TP
+.B Ctrl+W
+Save the buffer. If it has no name yet, ask for one first.
+.TP
+.B Ctrl+N
+Save under a different name and continue editing that file.
+.TP
+.B Ctrl+Q
+Quit. If there are unsaved changes, the first press warns and the second
+one discards them.
+.TP
+.B Ctrl+K
+Insert a character by its Unicode code point. Accepts decimal
+.RB ( 20013 )
+or hexadecimal with a
+.B 0x
+prefix
+.RB ( 0x4e2d ).
+.TP
+.B Ctrl+V
+Show the version in the status bar.
+.TP
+.B Ctrl+L
+Redraw the screen. Every key already redraws it, so this is only useful
+after the terminal has been upset by something else.
+.TP
+.B Arrow keys
+Move the cursor, one character at a time. Moving up or down keeps the
+column, so passing through a short line does not move the cursor left for
+good.
+.TP
+.B Home, End
+Jump to the start or the end of the line.
+.TP
+.B PageUp, PageDown
+Move up or down by one screenful.
+.TP
+.B Backspace
+Delete the character before the cursor. At the start of a line, join it
+with the line above.
+.TP
+.B Delete
+Delete the character under the cursor. At the end of a line, join it with
+the line below.
+.TP
+.B Tab
+Insert a tab character.
+.TP
+.B Esc
+Ignored.
+.SH TEXT HANDLING
+.SS UTF-8
+A character is treated as one character, whatever its length in bytes.
+The cursor steps over a Chinese character in one move, one press of
+Backspace removes the whole character, and a character is never split
+across two lines.
+.PP
+The locale is not consulted: the editor always reads and writes UTF-8, and
+always asks the terminal to draw UTF-8. This is what makes it behave the
+same over ssh, in a container and on a console.
+.PP
+Files that are not valid UTF-8 still open. Bytes that do not form a
+character are shown as a single replacement glyph and are written back
+unchanged, so the editor never quietly destroys data it does not
+understand.
+.SS Tabs
+Tabs are drawn as spaces up to the next tab stop, which is every
+.B 3
+columns, counted from the left edge of the text. The file keeps its tab
+characters; only the display is expanded. This is deliberate: a tab is a
+jump to a column, not a printable symbol, and showing it as
+.B ^I
+would misrepresent the layout of the file.
+.SS Line endings
+When a file is read, CRLF and lone CR line endings are treated as line
+breaks. When it is written, every line ends with a single LF, and the file
+ends with a newline.
+.SH STATUS BAR
+The bottom line shows the file name, a
+.B *
+if there are unsaved changes, and the cursor position as
+.IR line , column .
+The column counts display columns, so a tab counts as the number of spaces
+it occupies and a wide character counts as two.
+.PP
+When there is something to report \(em a save, an error, a version number
+\(em the message replaces the file name until the next key is pressed.
+.SH FILES
+.TP
+.I /usr/local/bin/quecto
+The installed binary. The manual shows the default prefix; packaging
+systems are expected to use their own.
+.TP
+.I /usr/local/bin/q
+Symlink to the same binary, for people who like short commands.
+.SH EXIT STATUS
+.TP
+.B 0
+Normal exit after Ctrl+Q, or after \-\-help or \-\-version.
+.TP
+.B 1
+The terminal could not be configured, a write failed, or the arguments
+were not understood.
+.SH EXAMPLES
+Open a file, or create it if it does not exist:
+.PP
+.RS 4
+.EX
+quecto notes.txt
+.EE
+.RE
+.PP
+Start with an empty buffer and name it when saving for the first time:
+.PP
+.RS 4
+.EX
+q
+.EE
+.RE
+.SH LIMITATIONS
+No syntax highlighting, no undo, no search, no multiple buffers. These are
+deliberate choices rather than omissions: the point of the program is to
+be small enough to read in one sitting.
+.PP
+The editor keeps the file in memory and rewrites it from scratch on save.
+Saving is not atomic: if the program is killed while writing, the file is
+left truncated.
+.PP
+A terminal is assumed to understand standard ANSI escapes and to measure
+text the same way this editor does. Terminals that draw emoji or ambiguous
+width characters differently will show the cursor out of step on those
+lines only.
+.SH SEE ALSO
+.BR vi (1),
+.BR nano (1),
+.BR ed (1)
+.SH AUTHORS
+Robert Y. Stanford et al.
+.SH LICENSE
+MIT. See the LICENSE file in the source distribution.
