@@ -222,6 +222,7 @@ static void screenDrawContent(QBuf *qb) {
                 if (isCtrlChar(c)) {
                     qbufPush(qb, "\x1b[7m", 4);
                     char sym = ctrlSymbol(c);
+                    if(sym == 'I') sym = ' ';
                     qbufPush(qb, &sym, 1);
                     qbufPush(qb, "\x1b[m", 3);
                 } else {
