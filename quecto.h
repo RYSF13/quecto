@@ -15,11 +15,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <termios.h>
 #include <unistd.h>
 
-#define Q_VERSION "1.0.0"
+#define Q_VERSION "1.1.0"
 
 /* Turns a letter into the code a terminal sends for Ctrl+letter. */
 #define CTRL_KEY(k) ((k) & 0x1f)
@@ -84,6 +85,7 @@ typedef struct {
     int modified;             /* set once the buffer differs from disk  */
     char *filepath;           /* NULL until the file has a name         */
     char message[256];        /* one line of feedback, empty when idle  */
+    char findtext[256];       /* last search string, reused as the default */
     int confirmquit;          /* user has already been warned once      */
     struct termios savedterm; /* terminal state to restore on exit      */
 } Editor;

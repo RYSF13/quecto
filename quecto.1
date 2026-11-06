@@ -1,4 +1,4 @@
-.TH QUECTO 1 "March 2026" "quecto 1.0" "User Commands"
+.TH QUECTO 1 "November 2026" "quecto 1.1" "User Commands"
 .SH NAME
 quecto \- a small terminal text editor
 .SH SYNOPSIS
@@ -41,6 +41,22 @@ Save under a different name and continue editing that file.
 .B Ctrl+Q
 Quit. If there are unsaved changes, the first press warns and the second
 one discards them.
+.TP
+.B Ctrl+F
+Ask for a string and move the cursor to the next match. Pressing Ctrl+F
+again and then Enter repeats the search with the previous string, so
+Ctrl+F, Enter is "find next".
+.TP
+.B Ctrl+G
+Ask for a line number and jump to it. A leading
+.B +
+or
+.B -
+counts from the current line, so
+.B +10
+is ten lines down and
+.B -1
+is the line above.
 .TP
 .B Ctrl+K
 Insert a character by its Unicode code point. Accepts decimal
@@ -108,6 +124,45 @@ would misrepresent the layout of the file.
 When a file is read, CRLF and lone CR line endings are treated as line
 breaks. When it is written, every line ends with a single LF, and the file
 ends with a newline.
+.SH SEARCH
+A search is a plain substring match, not a regular expression, and it
+starts one character after the cursor so that repeating it moves on to the
+next match. On reaching the end of the file it continues from the top and
+says so. Nothing in the buffer is changed by a search.
+.PP
+Case is smart: a pattern containing only lower case letters matches either
+case, so
+.B todo
+finds
+.BR TODO ,
+while a pattern with an upper case letter in it is matched exactly.
+.PP
+There is no search and replace. For rewriting text across a file,
+.BR sed (1)
+is the better tool.
+.SH SAVING
+The buffer is written to a temporary file in the same directory as the
+target, flushed with
+.BR fsync (2),
+and then renamed over the original. A save therefore either completes or
+leaves the previous file untouched; it cannot leave a half-written file
+behind, even if the machine loses power in the middle.
+.PP
+The permissions and, where the user is allowed to set them, the owner of
+the old file are carried over to the new one. No temporary file survives a
+successful save.
+.PP
+This is not the same thing as a swap file. A swap file, such as the
+.B .file.swp
+written by
+.BR vi (1),
+is a crash recovery journal kept alongside the edit so that an interrupted
+session can be resumed. Quecto keeps no such file and has nothing to
+recover: the save either happened or did not.
+.PP
+A symlink, hardlink, device node or pipe is written through in place rather
+than replaced, since a rename would break the link. Those saves are not
+atomic.
 .SH STATUS BAR
 The bottom line shows the file name, a
 .B *
@@ -155,9 +210,11 @@ No syntax highlighting, no undo, no search, no multiple buffers. These are
 deliberate choices rather than omissions: the point of the program is to
 be small enough to read in one sitting.
 .PP
-The editor keeps the file in memory and rewrites it from scratch on save.
-Saving is not atomic: if the program is killed while writing, the file is
-left truncated.
+The editor keeps the file in memory and rewrites it from scratch on save,
+so saving a large file costs as much as writing it once.
+.PP
+Saving through a symlink or a hardlinked file falls back to writing in
+place, which is not crash safe.
 .PP
 A terminal is assumed to understand standard ANSI escapes and to measure
 text the same way this editor does. Terminals that draw emoji or ambiguous

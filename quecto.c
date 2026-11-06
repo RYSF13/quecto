@@ -19,7 +19,7 @@ Editor Q;
 /* Declared up here because the file handling below needs the prompt and
    the prompt needs the drawing code, and C reads top to bottom. */
 static void statusSet(const char *fmt, ...);
-static char *inputPrompt(const char *prompt);
+static char *inputPrompt(const char *prompt, const char *initial);
 static void screenRefresh(void);
 
 /* ------------------------------------------------------------------ */
@@ -742,6 +742,120 @@ static void editorFixAllRows(void)
     for (i = 0; i < Q.linecount; i++) lineFix(&Q.lines[i]);
 }
 
+/* Put the cursor at the start of line `line`, counting from one. A line
+   number past the end of the file lands on the last line rather than
+   being refused: when you are guessing at a number, the nearest thing you
+   can get is more useful than an error. */
+static void editorGotoLine(long line)
+{
+    if (Q.linecount == 0) {
+        Q.cury = 0;
+        Q.curx = 0;
+        return;
+    }
+    if (line < 1) line = 1;
+    if (line > Q.linecount) line = Q.linecount;
+
+    Q.cury = (int)line - 1;
+    Q.curx = 0;
+    Q.goalx = -1;
+}
+
+/* ------------------------------------------------------------------ */
+/* search                                                             */
+/* ------------------------------------------------------------------ */
+
+/* A search is a plain substring match, done on bytes. UTF-8 makes that
+   safe: a valid sequence can only occur on a character boundary, so a
+   pattern never matches half a character by accident. */
+
+static int matchAt(const char *hay, int i, const char *needle, int nlen,
+                   int icase)
+{
+    int k;
+    unsigned char a, b;
+
+    for (k = 0; k < nlen; k++) {
+        a = (unsigned char)hay[i + k];
+        b = (unsigned char)needle[k];
+        if (icase) {
+            /* ASCII only, deliberately: tolower() on the bytes of a UTF-8
+               sequence would corrupt them. */
+            if (a < 128) a = (unsigned char)tolower(a);
+            if (b < 128) b = (unsigned char)tolower(b);
+        }
+        if (a != b) return 0;
+    }
+    return 1;
+}
+
+/* Case matters only when the pattern says it does: "TODO" finds exactly
+   "TODO", while "todo" finds "TODO" as well. Halfway between the two
+   sensible defaults, and it costs four lines. */
+static int hasUpper(const char *s)
+{
+    for (; *s != '\0'; s++)
+        if (*s >= 'A' && *s <= 'Z') return 1;
+    return 0;
+}
+
+/* Look for the pattern in lines first..last, starting at byte `from` in
+   the first of them. Returns the line index, or -1. */
+static int findMatch(int first, int last, int from, const char *needle,
+                     int nlen, int icase, int *outx)
+{
+    int i, k;
+
+    if (first < 0) first = 0;
+    if (last >= Q.linecount) last = Q.linecount - 1;
+
+    for (i = first; i <= last; i++) {
+        Line *ln = &Q.lines[i];
+        int start = (i == first && from > 0) ? from : 0;
+
+        for (k = start; k + nlen <= ln->len; k++) {
+            if (matchAt(ln->text, k, needle, nlen, icase)) {
+                *outx = k;
+                return i;
+            }
+        }
+    }
+    return -1;
+}
+
+/* Search forward from the cursor, wrapping round once at the end of the
+   file. The cursor lands on the start of the match; nothing is changed in
+   the buffer, so a search can be repeated or abandoned at no cost. */
+static int editorFind(const char *needle)
+{
+    int nlen = (int)strlen(needle);
+    int icase, line, x = 0, wrapped = 0;
+
+    if (nlen == 0) {
+        statusSet("Nothing to search for");
+        return 0;
+    }
+    icase = !hasUpper(needle);
+
+    line = findMatch(Q.cury, Q.linecount - 1, Q.curx + 1, needle, nlen,
+                     icase, &x);
+    if (line < 0) {
+        line = findMatch(0, Q.cury, 0, needle, nlen, icase, &x);
+        wrapped = 1;
+    }
+    if (line < 0) {
+        statusSet("Not found: %s", needle);
+        return 0;
+    }
+
+    Q.cury = line;
+    Q.curx = x;
+    Q.goalx = -1;
+    statusSet(wrapped ? "Found line %d (wrapped)" : "Found line %d",
+              line + 1);
+    return 1;
+}
+
 /* ------------------------------------------------------------------ */
 /* files                                                              */
 /* ------------------------------------------------------------------ */
@@ -795,44 +909,174 @@ static void fileLoad(const char *path)
     Q.modified = 0;
 }
 
-/* Save the buffer. Lines are written one by one straight to the file
-   descriptor instead of being copied into one big buffer first: less
-   memory, no failure mode on huge files, same number of syscalls in
-   practice. */
-static int fileSave(void)
+/* Copy the buffer into an open descriptor, one line at a time. Writing
+   the lines straight out means a large buffer never has to be copied into
+   a second large buffer first. */
+static int writeLines(int fd, int *total)
 {
-    int fd, i, total = 0;
-    char *path;
+    int i;
 
-    if (Q.filepath == NULL) {
-        path = inputPrompt("Save as: %s");
-        if (path == NULL) {
-            statusSet("Save cancelled");
-            return 0;
-        }
-        Q.filepath = path;
+    *total = 0;
+    for (i = 0; i < Q.linecount; i++) {
+        if (writeAll(fd, Q.lines[i].text, Q.lines[i].len) == -1 ||
+            writeAll(fd, "\n", 1) == -1)
+            return -1;
+        *total += Q.lines[i].len + 1;
     }
+    return 0;
+}
 
-    fd = open(Q.filepath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+/* Last resort: write over the file in place. This is not crash safe, but
+   it is the only thing that works for a symlink (where a rename would
+   replace the link instead of the file it points at) and for device
+   nodes, pipes and the like. */
+static int writeInPlace(const char *path)
+{
+    int fd, total = 0;
+
+    fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd == -1) {
         statusSet("Save failed: %s", strerror(errno));
         return 0;
     }
-
-    for (i = 0; i < Q.linecount; i++) {
-        if (writeAll(fd, Q.lines[i].text, Q.lines[i].len) == -1 ||
-            writeAll(fd, "\n", 1) == -1) {
-            statusSet("Save failed: %s", strerror(errno));
-            close(fd);
-            return 0;
-        }
-        total += Q.lines[i].len + 1;
+    if (writeLines(fd, &total) == -1) {
+        statusSet("Save failed: %s", strerror(errno));
+        close(fd);
+        return 0;
     }
     close(fd);
 
     Q.modified = 0;
     statusSet("Saved %d bytes", total);
     return 1;
+}
+
+/* Build the "<dir>/.<name>.XXXXXX" template mkstemp() wants. The
+   temporary file has to sit in the same directory as the target, because
+   rename() is only atomic within a single filesystem. Returns the length
+   of the directory part, or -1 if the name does not fit the buffer. */
+static int tempPath(char *buf, int size, const char *path)
+{
+    const char *slash = strrchr(path, '/');
+    const char *base = slash != NULL ? slash + 1 : path;
+    int dirlen = slash != NULL ? (int)(slash - path) + 1 : 0;
+    int n;
+
+    n = snprintf(buf, (size_t)size, "%.*s.%s.XXXXXX", dirlen, path, base);
+    if (n < 0 || n >= size) return -1;
+    return dirlen;
+}
+
+/* Push the directory entry itself to disk. Without this the rename can
+   still be lost by a crash a moment after a successful save: the file
+   contents would be durable and the name pointing at them would not. */
+static void syncDir(const char *tmp, int dirlen)
+{
+    char dir[4096];
+    int fd;
+
+    if (dirlen <= 0) {
+        strcpy(dir, ".");
+    } else {
+        if (dirlen >= (int)sizeof dir) return;
+        memcpy(dir, tmp, (size_t)dirlen);
+        dir[dirlen] = '\0';
+    }
+    fd = open(dir, O_RDONLY);
+    if (fd == -1) return;
+    (void)!fsync(fd);
+    close(fd);
+}
+
+/* The real save: write a temporary file beside the target, flush it,
+   then rename it over the original.
+
+   This is what makes a save atomic. Either the new file is complete and
+   in place, or the old file is untouched -- there is no moment where the
+   name points at a half-written file, which is what a plain truncate and
+   write leaves behind if the power goes out. It is also why a swap file
+   is not the answer: a swap file is a crash *recovery* journal (vim keeps
+   one so a killed session can be resumed), not a way of writing safely.
+   Quecto writes and renames, so it has nothing to recover. */
+static int writeAtomic(const char *path, const struct stat *st)
+{
+    char tmp[4096];
+    int dirlen, fd, total = 0;
+
+    dirlen = tempPath(tmp, (int)sizeof tmp, path);
+    if (dirlen < 0) {
+        statusSet("Save failed: name too long");
+        return 0;
+    }
+
+    fd = mkstemp(tmp);
+    if (fd == -1) {
+        statusSet("Save failed: %s", strerror(errno));
+        return 0;
+    }
+
+    /* Give the new file the permissions, and if we are allowed the owner,
+       of the file it replaces, so that saving does not quietly change
+       either. A brand new file gets the usual 0666 less the umask,
+       because mkstemp() is deliberately private. Both calls can fail for
+       an ordinary user, and a wrong owner is better than no file. */
+    if (st != NULL) {
+        (void)!fchmod(fd, st->st_mode & 07777);
+        (void)!fchown(fd, st->st_uid, st->st_gid);
+    } else {
+        mode_t mask = umask(0);
+        umask(mask);
+        (void)!fchmod(fd, 0666 & ~mask);
+    }
+
+    if (writeLines(fd, &total) == -1 || fsync(fd) == -1) {
+        statusSet("Save failed: %s", strerror(errno));
+        close(fd);
+        unlink(tmp);
+        return 0;
+    }
+    if (close(fd) == -1) {
+        statusSet("Save failed: %s", strerror(errno));
+        unlink(tmp);
+        return 0;
+    }
+
+    if (rename(tmp, path) == -1) {
+        statusSet("Save failed: %s", strerror(errno));
+        unlink(tmp);
+        return 0;
+    }
+    syncDir(tmp, dirlen);
+
+    Q.modified = 0;
+    statusSet("Saved %d bytes", total);
+    return 1;
+}
+
+/* Save the buffer. Anything that is not a plain file is written through
+   in place; anything else is replaced atomically. */
+static int fileSave(void)
+{
+    struct stat st;
+    int have;
+
+    if (Q.filepath == NULL) {
+        char *path = inputPrompt("Save as: %s", "");
+        if (path == NULL || path[0] == '\0') {
+            free(path);
+            statusSet("Save cancelled");
+            return 0;
+        }
+        Q.filepath = path;
+    }
+
+    have = (lstat(Q.filepath, &st) == 0);
+    /* A symlink, a hardlink, a device node or a pipe is written through
+       rather than replaced: renaming over any of them would quietly break
+       the link. Only a plain, singly linked file gets the atomic path. */
+    if (have && (!S_ISREG(st.st_mode) || st.st_nlink > 1))
+        return writeInPlace(Q.filepath);
+    return writeAtomic(Q.filepath, have ? &st : NULL);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1049,16 +1293,25 @@ static void screenRefresh(void)
 
 /* Read a line of text in the status bar. Returns a malloc'd string, or
    NULL if the user changed their mind. Backspace removes a whole
-   character, so a Chinese file name can be typed and corrected. */
-static char *inputPrompt(const char *prompt)
+   character, so a Chinese file name can be typed and corrected.
+
+   `initial` pre-fills the line with the cursor at the end, which is what
+   makes repeating a search a two-key operation. */
+static char *inputPrompt(const char *prompt, const char *initial)
 {
     char *input = xmalloc(128);
-    int cap = 128, len = 0;
+    int cap = 128, len;
     char head[64];
     const char *p = prompt;
     int headlen = 0, headcols, i, key, n;
 
-    input[0] = '\0';
+    len = (int)strlen(initial);
+    if (len + 1 > cap) {
+        cap = len + 1;
+        input = xrealloc(input, (size_t)cap);
+    }
+    memcpy(input, initial, (size_t)len + 1);
+
     while (*p != '\0' && *p != '%' && headlen < (int)sizeof head - 1)
         head[headlen++] = *p++;
     head[headlen] = '\0';
@@ -1103,9 +1356,10 @@ static char *inputPrompt(const char *prompt)
             free(input);
             return NULL;
         } else if (key == '\r' || key == '\n') {
-            if (len > 0) return input;
-            free(input);
-            return NULL;
+            /* An empty answer is still an answer -- repeating a search
+               needs one. Callers that cannot use it treat "" as a
+               cancel. */
+            return input;
         } else if (key > 32 && key != 127) {
             char buf[4];
             int blen = utf8Encode(key, buf);
@@ -1124,11 +1378,14 @@ static char *inputPrompt(const char *prompt)
    character into the file without needing an input method. */
 static void inputCodePoint(void)
 {
-    char *text = inputPrompt("Code point: %s");
+    char *text = inputPrompt("Code point: %s", "");
     char *end;
     long cp;
 
-    if (text == NULL) return;
+    if (text == NULL || text[0] == '\0') {
+        free(text);
+        return;
+    }
 
     errno = 0;
     cp = strtol(text, &end, 0);
@@ -1146,6 +1403,62 @@ static void inputCodePoint(void)
  * Vertical moves remember the column they started from in Q.goalx, so
  * passing through a short line on the way does not drag the cursor to
  * the left for good. */
+/* Ask which line to go to. A leading + or - counts from the current
+   line, so "+10" is ten lines down, which is the one relative form people
+   actually use. */
+static void inputGoto(void)
+{
+    char *text = inputPrompt("Go to line: %s", "");
+    char *end;
+    long line;
+    int relative = 0;
+
+    if (text == NULL || text[0] == '\0') {
+        free(text);
+        return;
+    }
+
+    if (text[0] == '+' || text[0] == '-') relative = 1;
+
+    errno = 0;
+    line = strtol(text, &end, 10);
+    if (end == text || errno != 0) {
+        statusSet("Not a line number: %s", text);
+        free(text);
+        return;
+    }
+    free(text);
+
+    if (relative) line += Q.cury + 1;
+    editorGotoLine(line);
+}
+
+/* Ask for a search string and jump to the first match after the cursor.
+   An empty answer repeats the previous search, so Ctrl+F followed by
+   Enter is "find next" and typing something new costs nothing extra. */
+static void inputFind(void)
+{
+    char *text = inputPrompt("Find: %s", "");
+    const char *needle;
+
+    if (text == NULL) return;
+
+    if (text[0] == '\0') {
+        if (Q.findtext[0] == '\0') {
+            free(text);
+            statusSet("Nothing to search for");
+            return;
+        }
+        needle = Q.findtext;
+    } else {
+        snprintf(Q.findtext, sizeof Q.findtext, "%s", text);
+        needle = Q.findtext;
+    }
+
+    editorFind(needle);
+    free(text);
+}
+
 static void cursorMove(int key)
 {
     Line *ln = (Q.cury < Q.linecount) ? &Q.lines[Q.cury] : NULL;
@@ -1220,7 +1533,11 @@ static void handleKey(void)
         break;
 
     case CTRL_KEY('n'): {
-        char *path = inputPrompt("New filename: %s");
+        char *path = inputPrompt("New filename: %s", "");
+        if (path != NULL && path[0] == '\0') {
+            free(path);
+            path = NULL;
+        }
         if (path != NULL) {
             free(Q.filepath);
             Q.filepath = path;
@@ -1231,6 +1548,14 @@ static void handleKey(void)
 
     case CTRL_KEY('k'):
         inputCodePoint();
+        break;
+
+    case CTRL_KEY('g'):
+        inputGoto();
+        break;
+
+    case CTRL_KEY('f'):
+        inputFind();
         break;
 
     case CTRL_KEY('v'):
@@ -1304,6 +1629,7 @@ static void editorSetup(void)
     Q.modified = 0;
     Q.filepath = NULL;
     Q.message[0] = '\0';
+    Q.findtext[0] = '\0';
     Q.confirmquit = 0;
 
     if (termGetSize(&Q.termrows, &Q.termcols) == -1) fatal("termGetSize");
@@ -1332,8 +1658,9 @@ static void usage(FILE *out)
             "  -v, --version   print version and exit\n"
             "  -h, --help      print this help and exit\n"
             "\n"
-            "Keys: ^W save, ^N save as, ^Q quit, ^K insert code point,\n"
-            "      ^V version, arrows/Home/End/PageUp/PageDown to move.\n"
+            "Keys: ^W save, ^N save as, ^Q quit, ^F find, ^G go to line,\n"
+            "      ^K insert code point, ^V version,\n"
+            "      arrows/Home/End/PageUp/PageDown to move.\n"
             "See quecto(1) for the full manual.\n");
 }
 
